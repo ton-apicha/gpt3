@@ -3,7 +3,15 @@ import { NextResponse } from "next/server";
 
 export default withAuth({
 	callbacks: {
-		authorized: ({ token }) => !!token,
+		authorized: ({ token, req }) => {
+			const pathname = req.nextUrl.pathname;
+			if (!token) return false;
+			if (pathname.startsWith("/admin")) {
+				const roles = (token as any).roleKeys ?? [];
+				return Array.isArray(roles) && roles.includes("admin");
+			}
+			return true;
+		},
 	},
 	pages: {
 		signIn: "/login",

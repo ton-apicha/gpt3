@@ -14,7 +14,10 @@ export async function streamFromOllama(chatId: string, modelId: string, prompt: 
 	if (!res.ok || !res.body) throw new Error(`Ollama error: ${res.status}`);
 	const reader = res.body.getReader();
 	const decoder = new TextDecoder();
-	let text = "";
+	let visibleText = "";
+	let thinkingText = "";
+	let pending = "";
+	let inThink = false;
 	let done = false;
 	const tokens = { prompt: 0, completion: 0, total: 0 } as { prompt: number; completion: number; total: number };
 	return {
@@ -33,8 +36,52 @@ export async function streamFromOllama(chatId: string, modelId: string, prompt: 
 						try {
 							const evt = JSON.parse(line);
 							if (evt.response) {
-								text += evt.response;
-								await writeEvent({ type: "delta", data: evt.response });
+								pending += String(evt.response);
+								while (true) {
+									if (!inThink) {
+										const startIdx = pending.indexOf("<think>");
+										if (startIdx === -1) {
+											const keep = "<think>".length - 1;
+											const outLen = Math.max(0, pending.length - keep);
+											const vis = pending.slice(0, outLen);
+											if (vis) {
+												visibleText += vis;
+												await writeEvent({ type: "delta", data: vis });
+											}
+											pending = pending.slice(outLen);
+											break;
+										} else {
+											const vis = pending.slice(0, startIdx);
+											if (vis) {
+												visibleText += vis;
+												await writeEvent({ type: "delta", data: vis });
+											}
+											pending = pending.slice(startIdx + "<think>".length);
+											inThink = true;
+										}
+									} else {
+										const endIdx = pending.indexOf("</think>");
+										if (endIdx === -1) {
+											const keep = "</think>".length - 1;
+											const outLen = Math.max(0, pending.length - keep);
+											const th = pending.slice(0, outLen);
+											if (th) {
+												thinkingText += th;
+												await writeEvent({ type: "thinking", data: th });
+											}
+											pending = pending.slice(outLen);
+											break;
+										} else {
+											const th = pending.slice(0, endIdx);
+											if (th) {
+												thinkingText += th;
+												await writeEvent({ type: "thinking", data: th });
+											}
+											pending = pending.slice(endIdx + "</think>".length);
+											inThink = false;
+										}
+									}
+								}
 							}
 							if (evt.done) {
 								tokens.total = evt.total ?? tokens.total;
@@ -45,9 +92,19 @@ export async function streamFromOllama(chatId: string, modelId: string, prompt: 
 					}
 				}
 			}
-			const assistant = await prisma.message.create({ data: { chatId, role: "assistant", content: text } as any });
+			// flush any remaining outside-think content
+			if (!inThink && pending) {
+				visibleText += pending;
+				await (async () => {
+					const encoder = new TextEncoder();
+					await writer.write(encoder.encode(JSON.stringify({ type: "delta", data: pending }) + "\n"));
+				})();
+				pending = "";
+			}
+			const assistant = await prisma.message.create({ data: { chatId, role: "assistant", content: visibleText } as any });
 			await writeEvent({ type: "done", id: assistant.id, tokens });
 		},
-		output: () => text,
+		output: () => visibleText,
+		get tokens() { return tokens; },
 	};
 }

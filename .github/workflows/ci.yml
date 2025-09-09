@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Setup env
+        run: |
+          echo 'DATABASE_URL="file:./dev.db"' >> .env
+          echo 'NEXTAUTH_SECRET="ci-secret"' >> .env
+          echo 'NEXTAUTH_URL="http://localhost:3000"' >> .env
+          echo 'OLLAMA_BASE_URL="http://localhost:11434"' >> .env
+
+      - name: Prisma generate & migrate
+        run: |
+          npm run prisma:generate
+          npx prisma migrate deploy
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps
+
+      - name: Run tests
+        run: npx playwright test
+
+
